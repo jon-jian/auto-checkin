@@ -1,0 +1,30 @@
+name: 每日自动签到
+
+on:
+  schedule:
+    # UTC 时间 00:00 = 北京时间 08:00，每天执行一次
+    # GitHub Actions 的 cron 可能有延迟，建议设置多个时间点兜底
+    - cron: '0 0 * * *'
+    # UTC 时间 12:00 = 北京时间 20:00，第二次兜底
+    - cron: '0 12 * * *'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 运行签到脚本
+        env:
+          TRAE_TOKEN: ${{ secrets.TRAE_TOKEN }}
+          CODEBUDDY_TOKEN: ${{ secrets.CODEBUDDY_TOKEN }}
+          SC_KEY: ${{ secrets.SC_KEY }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        run: python checkin.py
