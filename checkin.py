@@ -103,8 +103,20 @@ TRAE_STATUS_URL = f"{TRAE_API_HOST}/trae/api/v2/ug/checkin_credits/status"
 TRAE_CLAIM_URL = f"{TRAE_API_HOST}/trae/api/v2/ug/checkin_credits/claim"
 
 
+def _is_token_expired(status_code, resp):
+    """检测 Token 是否过期/失效"""
+    if status_code in (401, 403):
+        return True
+    if isinstance(resp, dict):
+        code = resp.get("code", resp.get("Code", 0))
+        msg = str(resp.get("msg", resp.get("message", "")))
+        if code in (401, 403, 4001, 4003) or "token" in msg.lower() or "unauthorized" in msg.lower():
+            return True
+    return False
+
+
 def trae_checkin(token):
-    """TraeWork 每日签到"""
+    """TraeWork 每日签到，返回 (success, msg, already_checked_in)"""
     log("=" * 50)
     log("开始 TraeWork 签到")
 
@@ -124,29 +136,37 @@ def trae_checkin(token):
     status_code, resp = post_json(TRAE_STATUS_URL, headers)
     log(f"状态查询响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
+    if _is_token_expired(status_code, resp):
+        log("[TraeWork] Token 已过期或失效，请重新提取")
+        return False, "Token 已过期，请重新提取并更新 Secrets", False
+
     if status_code != 200:
         log(f"[TraeWork] 状态查询失败: HTTP {status_code}")
-        return False, f"状态查询失败 (HTTP {status_code})"
+        return False, f"状态查询失败 (HTTP {status_code})", False
 
     data = resp.get("data", resp)
 
     if not data.get("enable", False):
         log("[TraeWork] 签到功能未开启或不可用")
-        return False, "签到功能未开启"
+        return False, "签到功能未开启", False
 
     if data.get("checked_in", False):
         credits = data.get("credits", "未知")
         log(f"[TraeWork] 今日已签到，当前积分: {credits}")
-        return True, f"今日已签到，当前积分: {credits}"
+        return True, f"今日已签到，当前积分: {credits}", True
 
     # 2. 领取签到积分
     log("今日未签到，正在领取...")
     status_code, resp = post_json(TRAE_CLAIM_URL, headers)
     log(f"签到领取响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
+    if _is_token_expired(status_code, resp):
+        log("[TraeWork] Token 已过期或失效，请重新提取")
+        return False, "Token 已过期，请重新提取并更新 Secrets", False
+
     if status_code != 200:
         log(f"[TraeWork] 签到失败: HTTP {status_code}")
-        return False, f"签到失败 (HTTP {status_code})"
+        return False, f"签到失败 (HTTP {status_code})", False
 
     # 3. 二次确认
     time.sleep(2)
@@ -156,15 +176,15 @@ def trae_checkin(token):
     if data2.get("checked_in", False):
         credits = data2.get("credits", "未知")
         log(f"[TraeWork] 签到成功! 当前积分: {credits}")
-        return True, f"签到成功! 当前积分: {credits}"
+        return True, f"签到成功! 当前积分: {credits}", False
     else:
         # claim 接口可能直接返回成功信息
         claim_credits = resp.get("credits", resp.get("data", {}).get("credits", ""))
         if resp.get("code") == 0 or resp.get("code") == 200:
             log(f"[TraeWork] 签到可能成功（接口返回 code=0），当前积分: {claim_credits}")
-            return True, f"签到成功! 当前积分: {claim_credits}"
+            return True, f"签到成功! 当前积分: {claim_credits}", False
         log(f"[TraeWork] 签到后未确认，返回: {json.dumps(resp, ensure_ascii=False)[:200]}")
-        return False, "签到后未确认，请手动检查"
+        return False, "签到后未确认，请手动检查", False
 
 
 # ============================================================
@@ -177,7 +197,7 @@ CB_CHECKIN_URL = f"{CB_API_HOST}/v2/billing/meter/daily-checkin"
 
 
 def codebuddy_checkin(token):
-    """CodeBuddy / WorkBuddy 每日签到"""
+    """CodeBuddy / WorkBuddy 每日签到，返回 (success, msg, already_checked_in)"""
     log("=" * 50)
     log("开始 CodeBuddy 签到")
 
@@ -190,9 +210,13 @@ def codebuddy_checkin(token):
     status_code, resp = post_json(CB_STATUS_URL, headers)
     log(f"状态查询响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
+    if _is_token_expired(status_code, resp):
+        log("[CodeBuddy] Token 已过期或失效，请重新提取")
+        return False, "Token 已过期，请重新提取并更新 Secrets", False
+
     if status_code != 200:
         log(f"[CodeBuddy] 状态查询失败: HTTP {status_code}")
-        return False, f"状态查询失败 (HTTP {status_code})"
+        return False, f"状态查询失败 (HTTP {status_code})", False
 
     data = resp.get("data", resp)
     today = datetime.date.today().isoformat()
@@ -201,16 +225,20 @@ def codebuddy_checkin(token):
     if data.get("today_checked_in", False) or today in checkin_dates:
         streak = data.get("streak_days", "未知")
         log(f"[CodeBuddy] 今日已签到，连续 {streak} 天")
-        return True, f"今日已签到，连续 {streak} 天"
+        return True, f"今日已签到，连续 {streak} 天", True
 
     # 2. 执行签到
     log("今日未签到，正在签到...")
     status_code, resp = post_json(CB_CHECKIN_URL, headers)
     log(f"签到响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
+    if _is_token_expired(status_code, resp):
+        log("[CodeBuddy] Token 已过期或失效，请重新提取")
+        return False, "Token 已过期，请重新提取并更新 Secrets", False
+
     if status_code != 200:
         log(f"[CodeBuddy] 签到失败: HTTP {status_code}")
-        return False, f"签到失败 (HTTP {status_code})"
+        return False, f"签到失败 (HTTP {status_code})", False
 
     # 3. 二次确认
     time.sleep(2)
@@ -221,10 +249,10 @@ def codebuddy_checkin(token):
     if data2.get("today_checked_in", False) or today in checkin_dates2:
         streak = data2.get("streak_days", "未知")
         log(f"[CodeBuddy] 签到成功! 连续 {streak} 天")
-        return True, f"签到成功! 连续 {streak} 天"
+        return True, f"签到成功! 连续 {streak} 天", False
     else:
         log(f"[CodeBuddy] 签到后未确认，返回: {json.dumps(resp, ensure_ascii=False)[:200]}")
-        return False, "签到后未确认，请手动检查"
+        return False, "签到后未确认，请手动检查", False
 
 
 # ============================================================
@@ -246,22 +274,29 @@ def main():
         sys.exit(1)
 
     results = []
+    need_push = False  # 是否需要推送通知
 
     if trae_token:
         try:
-            success, msg = trae_checkin(trae_token)
+            success, msg, already = trae_checkin(trae_token)
             results.append(f"TraeWork: {'✅' if success else '❌'} {msg}")
+            if not already:
+                need_push = True
         except Exception as e:
             log(f"[TraeWork] 异常: {e}")
             results.append(f"TraeWork: ❌ 异常: {e}")
+            need_push = True
 
     if cb_token:
         try:
-            success, msg = codebuddy_checkin(cb_token)
+            success, msg, already = codebuddy_checkin(cb_token)
             results.append(f"CodeBuddy: {'✅' if success else '❌'} {msg}")
+            if not already:
+                need_push = True
         except Exception as e:
             log(f"[CodeBuddy] 异常: {e}")
             results.append(f"CodeBuddy: ❌ 异常: {e}")
+            need_push = True
 
     # 汇总
     summary = "\n".join(results)
@@ -270,9 +305,13 @@ def main():
     log(summary)
     log("=" * 60)
 
-    # 推送通知
-    if sc_key or webhook_url:
+    # 推送通知：仅在首次签到成功、签到失败、Token 过期时推送
+    # 今日已签到的重复执行不推送
+    if need_push and (sc_key or webhook_url):
+        log("检测到需要通知的事件，正在推送...")
         push_notification("自动签到结果", summary, sc_key, webhook_url)
+    else:
+        log("今日已签到，无需推送通知")
 
 
 if __name__ == "__main__":
