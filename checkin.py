@@ -6,6 +6,7 @@ TraeWork + CodeBuddy 每日自动签到脚本
 
 环境变量:
   TRAE_TOKEN      TraeWork (TRAE SOLO CN) 的 JWT Token（必填，如需签到 TraeWork）
+  TRAE_DEVICE_ID  TraeWork 持久化设备 ID（可选，不填则基于 Token 自动生成确定性 ID）
   CODEBUDDY_TOKEN CodeBuddy / WorkBuddy 的 accessToken（必填，如需签到 CodeBuddy）
   SC_KEY          Server 酱推送 sendkey（可选，留空则不推送）
   WEBHOOK_URL     通用 Webhook 推送地址（可选，POST JSON {content: "..."}）
@@ -17,7 +18,6 @@ import os
 import sys
 import json
 import time
-import uuid
 import hashlib
 import datetime
 import urllib.request
@@ -120,14 +120,17 @@ def trae_checkin(token):
     log("=" * 50)
     log("开始 TraeWork 签到")
 
-    device_id = hashlib.sha256(uuid.uuid4().bytes).hexdigest()[:32]
+    # 使用持久化设备 ID：优先从环境变量读取，否则基于 token 生成确定性 ID
+    # 源码中 guaranteedDeviceId 是持久化的，每次随机生成会被服务端检测为异常
+    device_id = os.environ.get("TRAE_DEVICE_ID", "").strip()
+    if not device_id:
+        device_id = hashlib.sha256(token.encode()).hexdigest()[:32]
 
     headers = {
+        "Content-Type": "application/json",
         "Authorization": f"Cloud-IDE-JWT {token}",
-        "X-Cloudide-Token": token,
         "x-device-id": device_id,
         "x-device-type": "windows",
-        "x-app-id": "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
     }
 
     # 直接签到，不预先查询状态（避免被检测为自动化行为）
@@ -274,17 +277,7 @@ def main():
     results = []
     need_push = False  # 是否需要推送通知
 
-    if trae_token:
-        try:
-            success, msg, already = trae_checkin(trae_token)
-            results.append(f"TraeWork: {'✅' if success else '❌'} {msg}")
-            if not already:
-                need_push = True
-        except Exception as e:
-            log(f"[TraeWork] 异常: {e}")
-            results.append(f"TraeWork: ❌ 异常: {e}")
-            need_push = True
-
+    # 先签到 CodeBuddy，再签到 TraeWork
     if cb_token:
         try:
             success, msg, already = codebuddy_checkin(cb_token)
@@ -296,7 +289,18 @@ def main():
             results.append(f"CodeBuddy: ❌ 异常: {e}")
             need_push = True
 
-    # 汇总
+    if trae_token:
+        try:
+            success, msg, already = trae_checkin(trae_token)
+            results.append(f"TraeWork: {'✅' if success else '❌'} {msg}")
+            if not already:
+                need_push = True
+        except Exception as e:
+            log(f"[TraeWork] 异常: {e}")
+            results.append(f"TraeWork: ❌ 异常: {e}")
+            need_push = True
+
+    # 汇总（CodeBuddy 在前，TraeWork 在后）
     summary = "\n".join(results)
     log("=" * 60)
     log("签到结果汇总:")

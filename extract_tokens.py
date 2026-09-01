@@ -11,6 +11,7 @@
 提取结果会直接打印，请将对应的值填入 GitHub Secrets:
   TRAE_TOKEN      -> TraeWork 的 JWT Token
   CODEBUDDY_TOKEN -> CodeBuddy 的 accessToken
+  TRAE_DEVICE_ID  -> TraeWork 的持久化设备 ID（可选，不填则自动基于 Token 生成）
 """
 
 import os
@@ -198,6 +199,41 @@ def extract_trae_token():
 
 
 # ============================================================
+# TraeWork 设备 ID 提取
+# ============================================================
+
+def extract_trae_device_id():
+    """从 storage.json 中提取 TraeWork 的持久化设备 ID"""
+    appdata = os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming"))
+
+    candidates = [
+        Path(appdata) / "TRAE SOLO CN" / "User",
+        Path(appdata) / "Trae CN" / "User",
+        Path(appdata) / "TRAE SOLO" / "User",
+        Path(appdata) / "Trae" / "User",
+    ]
+
+    for data_dir in candidates:
+        storage_path = data_dir / "globalStorage" / "storage.json"
+        if not storage_path.exists():
+            continue
+
+        try:
+            with open(storage_path, "r", encoding="utf-8") as f:
+                storage = json.load(f)
+        except Exception:
+            continue
+
+        # telemetry.devDeviceId 是客户端 guaranteedDeviceId 的来源
+        device_id = storage.get("telemetry.devDeviceId")
+        if device_id and device_id != "0":
+            print(f"\n[TraeWork] 设备 ID: {device_id}")
+            return device_id
+
+    return None
+
+
+# ============================================================
 # CodeBuddy (WorkBuddy) Token 提取
 # ============================================================
 
@@ -270,6 +306,7 @@ def main():
     print()
 
     trae_token = extract_trae_token()
+    trae_device_id = extract_trae_device_id()
     cb_token = extract_codebuddy_token()
 
     print()
@@ -284,6 +321,14 @@ def main():
     else:
         print("\n❌ TraeWork Token 提取失败")
         print("   请确认已安装并登录 TraeWork / TRAE SOLO CN 客户端")
+
+    if trae_device_id:
+        print(f"\n✅ TraeWork 设备 ID 提取成功!")
+        print(f"   GitHub Secret 名: TRAE_DEVICE_ID")
+        print(f"   值: {trae_device_id}")
+        print(f"   （可选，不填脚本会基于 Token 自动生成确定性 ID）")
+    else:
+        print("\n⚠️ TraeWork 设备 ID 未提取到（不影响使用，脚本会自动生成）")
 
     if cb_token:
         print(f"\n✅ CodeBuddy Token 提取成功!")
