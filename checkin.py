@@ -155,18 +155,30 @@ def trae_checkin(token):
         log(f"[TraeWork] 今日已签到，当前积分: {credits}")
         return True, f"今日已签到，当前积分: {credits}", True
 
-    # 2. 领取签到积分
-    log("今日未签到，正在领取...")
-    status_code, resp = post_json(TRAE_CLAIM_URL, headers)
-    log(f"签到领取响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
+    # 2. 领取签到积分（带重试，应对 "当前参与用户太多" 限流）
+    max_retries = 5
+    resp = None
+    for attempt in range(1, max_retries + 1):
+        log(f"今日未签到，正在领取... (第 {attempt}/{max_retries} 次)")
+        status_code, resp = post_json(TRAE_CLAIM_URL, headers)
+        log(f"签到领取响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
-    if _is_token_expired(status_code, resp):
-        log("[TraeWork] Token 已过期或失效，请重新提取")
-        return False, "Token 已过期，请重新提取并更新 Secrets", False
+        if _is_token_expired(status_code, resp):
+            log("[TraeWork] Token 已过期或失效，请重新提取")
+            return False, "Token 已过期，请重新提取并更新 Secrets", False
 
-    if status_code != 200:
-        log(f"[TraeWork] 签到失败: HTTP {status_code}")
-        return False, f"签到失败 (HTTP {status_code})", False
+        if status_code != 200:
+            log(f"[TraeWork] 签到失败: HTTP {status_code}")
+            return False, f"签到失败 (HTTP {status_code})", False
+
+        # code=9074 是服务端限流，等待后重试
+        if resp.get("code") == 9074:
+            wait = 5 * attempt
+            log(f"[TraeWork] 服务端限流，{wait} 秒后重试...")
+            time.sleep(wait)
+            continue
+
+        break
 
     # 3. 二次确认
     time.sleep(2)
@@ -184,7 +196,7 @@ def trae_checkin(token):
             log(f"[TraeWork] 签到可能成功（接口返回 code=0），当前积分: {claim_credits}")
             return True, f"签到成功! 当前积分: {claim_credits}", False
         log(f"[TraeWork] 签到后未确认，返回: {json.dumps(resp, ensure_ascii=False)[:200]}")
-        return False, "签到后未确认，请手动检查", False
+        return False, f"签到失败: {resp.get('message', '未知错误')}", False
 
 
 # ============================================================
