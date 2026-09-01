@@ -11,12 +11,18 @@
 
 ## 原理
 
-通过逆向分析客户端的签到接口，直接用 HTTP API 调用完成签到，无需启动桌面客户端。
+通过逆向分析客户端源码，直接用 HTTP API 调用完成签到，无需启动桌面客户端。
 
 - **TraeWork**: `POST https://api.trae.cn/trae/api/v2/ug/checkin_credits/claim`
 - **CodeBuddy**: `POST https://www.codebuddy.cn/v2/billing/meter/daily-checkin`
 
 签到脚本纯 Python 标准库实现，GitHub Actions 直接运行，零依赖。
+
+### 反检测设计
+
+- **持久化设备 ID**：从源码分析得知 TraeWork 使用 `guaranteedDeviceId` 做请求标识，脚本使用持久化 ID 而非随机生成，避免被服务端限流
+- **直接签到**：不预先查询签到状态，直接调用 claim 接口，减少 API 调用次数
+- **限流重试**：遇到 `code: 9074`（参与用户太多）时自动等待重试，最多 8 次，间隔递增（30s ~ 5min）
 
 ## 部署步骤
 
@@ -42,14 +48,13 @@ pip install pycryptodome
 python extract_tokens.py
 ```
 
-脚本会自动从本地客户端文件中解密并提取 Token：
+脚本会自动从本地客户端文件中解密并提取 Token 和设备 ID：
 
-| 平台 | 本地文件路径 |
-|------|-------------|
-| TraeWork | `%APPDATA%\TRAE SOLO CN\User\globalStorage\storage.json` |
-| CodeBuddy | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info` |
-
-TraeWork 的 Token 使用 AES-128-CBC 加密存储，提取脚本内置了从客户端源码中逆向得到的盐值，可自动解密。
+| 提取项 | 本地文件路径 | 说明 |
+|--------|-------------|------|
+| TraeWork Token | `%APPDATA%\TRAE SOLO CN\User\globalStorage\storage.json` | AES-128-CBC 加密存储，脚本自动解密 |
+| TraeWork 设备 ID | 同上 | `telemetry.devDeviceId` 字段 |
+| CodeBuddy Token | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info` | 明文 JSON |
 
 ### 3. 配置 GitHub Secrets
 
@@ -58,25 +63,36 @@ TraeWork 的 Token 使用 AES-128-CBC 加密存储，提取脚本内置了从客
 | Secret 名称 | 值 | 必填 |
 |-------------|---|------|
 | `TRAE_TOKEN` | TraeWork 提取的 JWT Token | 签到 TraeWork 时必填 |
+| `TRAE_DEVICE_ID` | TraeWork 提取的设备 ID | 可选，不填则基于 Token 自动生成确定性 ID |
 | `CODEBUDDY_TOKEN` | CodeBuddy 提取的 accessToken | 签到 CodeBuddy 时必填 |
-| `SC_KEY` | Server 酱 sendkey（可选） | 可选，用于微信推送通知 |
-| `WEBHOOK_URL` | 通用 Webhook 地址（可选） | 可选，POST JSON 通知 |
+| `SC_KEY` | Server 酱 sendkey | 可选，用于微信推送通知 |
+| `WEBHOOK_URL` | 通用 Webhook 地址 | 可选，POST JSON 通知 |
 
 ### 4. 启用 Actions
 
 - 进入仓库 **Actions** 页面，确认 workflows 已启用
 - 手动点击 **Run workflow** 测试一次
-- 定时任务每天北京时间 08:00 和 20:00 自动执行
+- 定时任务每天北京时间 08:00 和 10:00 自动执行
 
 ## 定时规则
 
 ```yaml
 schedule:
-  - cron: '0 0 * * *'   # UTC 00:00 = 北京时间 08:00
-  - cron: '0 12 * * *'  # UTC 12:00 = 北京时间 20:00
+  - cron: '0 0 * * *'   # UTC 00:00 = 北京时间 08:00（主签到）
+  - cron: '0 2 * * *'   # UTC 02:00 = 北京时间 10:00（兜底补签）
 ```
 
-GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天跑两次确保签到成功。
+签到顺序：先 CodeBuddy 后 TraeWork。GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天跑两次确保签到成功。
+
+## 推送通知策略
+
+**仅在以下情况推送通知**（通过 Server 酱或 Webhook）：
+
+- 首次签到成功
+- 签到失败（含限流重试耗尽）
+- Token 过期/失效
+
+今日已签到的重复执行**不推送**，避免打扰。
 
 ## 注意事项
 
@@ -91,6 +107,7 @@ GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天�
 ```bash
 # 设置环境变量
 export TRAE_TOKEN="你的TraeWork Token"
+export TRAE_DEVICE_ID="你的设备ID（可选）"
 export CODEBUDDY_TOKEN="你的CodeBuddy Token"
 
 # 运行
@@ -106,7 +123,10 @@ A: 重新打开 TraeWork / CodeBuddy 客户端并登录，然后重新运行 `ex
 A: 只配置对应的 Secret 即可。只配 `TRAE_TOKEN` 就只签到 TraeWork，只配 `CODEBUDDY_TOKEN` 就只签到 CodeBuddy。
 
 **Q: 怎么收到签到结果通知？**
-A: 配置 `SC_KEY`（Server 酱）或 `WEBHOOK_URL`（飞书/钉钉/企微等 Webhook），签到结果会自动推送。
+A: 配置 `SC_KEY`（Server 酱）或 `WEBHOOK_URL`（飞书/钉钉/企微等 Webhook），签到结果会自动推送到微信。
+
+**Q: TraeWork 签到返回 "当前参与用户太多" 怎么办？**
+A: 这是服务端限流（code: 9074），脚本会自动等待重试最多 8 次。如果仍失败，10 点的兜底任务会再试一次。建议配置 `TRAE_DEVICE_ID` 使用客户端的真实设备 ID，可有效减少被限流的概率。
 
 **Q: GitHub Actions 被禁用怎么办？**
 A: GitHub 会在仓库 60 天无活动时自动禁用 Actions。定期 push 代码或手动触发 workflow 即可保持活跃。
