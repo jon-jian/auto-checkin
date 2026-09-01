@@ -134,8 +134,9 @@ def trae_checkin(token):
     }
 
     # 直接签到，不预先查询状态（避免被检测为自动化行为）
-    max_retries = 8
-    retry_intervals = [30, 60, 90, 120, 180, 240, 300, 300]
+    # 限流时快速重试，不长时间等待（靠 10 点兜底任务补签）
+    max_retries = 3
+    retry_intervals = [10, 20]
     resp = None
     rate_limited = False
     for attempt in range(max_retries):
@@ -151,21 +152,23 @@ def trae_checkin(token):
             log(f"[TraeWork] 签到失败: HTTP {status_code}")
             return False, f"签到失败 (HTTP {status_code})", False
 
-        # code=9074 是服务端限流，等待后重试
+        # code=9074 是服务端限流，快速重试
         if resp.get("code") == 9074:
             rate_limited = True
-            wait = retry_intervals[attempt]
-            log(f"[TraeWork] 服务端限流，{wait} 秒后重试...")
-            time.sleep(wait)
-            continue
+            if attempt < max_retries - 1:
+                wait = retry_intervals[attempt]
+                log(f"[TraeWork] 服务端限流，{wait} 秒后重试...")
+                time.sleep(wait)
+                continue
+            break
 
         rate_limited = False
         break
 
-    # 重试全部耗尽仍然被限流，直接返回失败
+    # 重试耗尽仍然被限流，直接返回失败
     if rate_limited:
-        log("[TraeWork] 重试耗尽，签到失败")
-        return False, f"签到失败: {resp.get('message', '服务端限流，重试耗尽')}", False
+        log("[TraeWork] 限流重试失败，等待兜底任务补签")
+        return False, f"签到失败: {resp.get('message', '服务端限流')}", False
 
     # 签到接口返回成功
     if resp.get("code") == 0 or resp.get("code") == 200:
