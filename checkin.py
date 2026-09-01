@@ -156,10 +156,12 @@ def trae_checkin(token):
         return True, f"今日已签到，当前积分: {credits}", True
 
     # 2. 领取签到积分（带重试，应对 "当前参与用户太多" 限流）
-    max_retries = 5
+    max_retries = 8
+    retry_intervals = [30, 60, 90, 120, 180, 240, 300, 300]
     resp = None
-    for attempt in range(1, max_retries + 1):
-        log(f"今日未签到，正在领取... (第 {attempt}/{max_retries} 次)")
+    rate_limited = False
+    for attempt in range(max_retries):
+        log(f"今日未签到，正在领取... (第 {attempt + 1}/{max_retries} 次)")
         status_code, resp = post_json(TRAE_CLAIM_URL, headers)
         log(f"签到领取响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
@@ -173,12 +175,19 @@ def trae_checkin(token):
 
         # code=9074 是服务端限流，等待后重试
         if resp.get("code") == 9074:
-            wait = 5 * attempt
+            rate_limited = True
+            wait = retry_intervals[attempt]
             log(f"[TraeWork] 服务端限流，{wait} 秒后重试...")
             time.sleep(wait)
             continue
 
+        rate_limited = False
         break
+
+    # 重试全部耗尽仍然被限流，直接返回失败
+    if rate_limited:
+        log("[TraeWork] 重试耗尽，签到失败")
+        return False, f"签到失败: {resp.get('message', '服务端限流，重试耗尽')}", False
 
     # 3. 二次确认
     time.sleep(2)
