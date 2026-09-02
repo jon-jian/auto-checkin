@@ -106,6 +106,7 @@ def push_notification(title, content, sc_key="", webhook_url=""):
 TRAE_API_HOST = "https://api.trae.cn"
 TRAE_STATUS_URL = f"{TRAE_API_HOST}/trae/api/v2/ug/checkin_credits/status"
 TRAE_CLAIM_URL = f"{TRAE_API_HOST}/trae/api/v2/ug/checkin_credits/claim"
+TRAE_ACTIVITY_ACTION_URL = f"{TRAE_API_HOST}/trae/api/v2/ug/activity/action"
 
 
 def _is_token_expired(status_code, resp):
@@ -148,14 +149,18 @@ def trae_checkin(token):
     log(f"等待 {initial_delay:.1f} 秒后开始签到...")
     time.sleep(initial_delay)
 
-    # 直接签到，不预先查询状态（避免被检测为自动化行为）
-    # 限流时快速重试，不长时间等待（靠 10 点兜底任务补签）
+    # 签到策略：先尝试 claim API，限流时尝试 activity/action API
+    # 源码分析发现两个签到入口：
+    #   1. claimCheckinCredits() → /checkin_credits/claim（客户端代码中定义但日志中从未调用）
+    #   2. handleCommercialActivity() → /activity/action（需要 activity_type 参数）
     max_retries = 3
     retry_intervals = [10, 20]
     resp = None
     rate_limited = False
+
+    # 策略 1: claim API（快速重试）
     for attempt in range(max_retries):
-        log(f"正在签到... (第 {attempt + 1}/{max_retries} 次)")
+        log(f"正在签到 (claim)... (第 {attempt + 1}/{max_retries} 次)")
         status_code, resp = post_json(TRAE_CLAIM_URL, headers)
         log(f"签到响应: HTTP {status_code} - {json.dumps(resp, ensure_ascii=False)[:300]}")
 
@@ -167,8 +172,16 @@ def trae_checkin(token):
             log(f"[TraeWork] 签到失败: HTTP {status_code}")
             return False, f"签到失败 (HTTP {status_code})", False
 
-        # code=9074 是服务端限流，快速重试
-        if resp.get("code") == 9074:
+        code = resp.get("code", -1)
+
+        # code=0 成功
+        if code in (0, 200):
+            credits = resp.get("credits", resp.get("data", {}).get("credits", "未知"))
+            log(f"[TraeWork] 签到成功! 当前积分: {credits}")
+            return True, f"签到成功! 当前积分: {credits}", False
+
+        # code=9074 服务端限流，快速重试
+        if code == 9074:
             rate_limited = True
             if attempt < max_retries - 1:
                 wait = retry_intervals[attempt]
@@ -177,30 +190,38 @@ def trae_checkin(token):
                 continue
             break
 
-        rate_limited = False
+        # 其他错误码，跳出尝试 activity/action
         break
 
-    # 重试耗尽仍然被限流，直接返回失败
+    # 策略 2: activity/action API（claim 限流时的备选方案）
+    if rate_limited or (resp and resp.get("code") not in (0, 200)):
+        log("[TraeWork] claim API 限流，尝试 activity/action API...")
+        action_data = {"activity_id": "checkin_credits", "activity_type": 104, "req_source": 2}
+        status_code2, resp2 = post_json(TRAE_ACTIVITY_ACTION_URL, headers, action_data)
+        log(f"activity/action 响应: HTTP {status_code2} - {json.dumps(resp2, ensure_ascii=False)[:300]}")
+
+        if status_code2 == 200:
+            code2 = resp2.get("code", -1)
+            if code2 in (0, 200):
+                credits = resp2.get("credits", resp2.get("data", {}).get("credits", "未知"))
+                log(f"[TraeWork] 签到成功 (activity/action)! 当前积分: {credits}")
+                return True, f"签到成功! 当前积分: {credits}", False
+
+        # 两个 API 都失败，查状态确认是否今日已签
+        log("[TraeWork] 两个签到 API 均失败，查询状态确认...")
+        time.sleep(2)
+        status_code3, resp3 = post_json(TRAE_STATUS_URL, headers)
+        if status_code3 == 200:
+            data3 = resp3.get("data", resp3)
+            if data3.get("checked_in", False):
+                credits = data3.get("credits", "未知")
+                log(f"[TraeWork] 今日已签到，当前积分: {credits}")
+                return True, f"今日已签到，当前积分: {credits}", True
+
+    # 重试耗尽仍然被限流
     if rate_limited:
         log("[TraeWork] 限流重试失败，等待兜底任务补签")
         return False, f"签到失败: {resp.get('message', '服务端限流')}", False
-
-    # 签到接口返回成功
-    if resp.get("code") == 0 or resp.get("code") == 200:
-        credits = resp.get("credits", resp.get("data", {}).get("credits", "未知"))
-        log(f"[TraeWork] 签到成功! 当前积分: {credits}")
-        return True, f"签到成功! 当前积分: {credits}", False
-
-    # 其他非成功响应，查一次状态判断是否今日已签
-    log("[TraeWork] 签到返回非成功，查询状态确认...")
-    time.sleep(2)
-    status_code2, resp2 = post_json(TRAE_STATUS_URL, headers)
-    if status_code2 == 200:
-        data2 = resp2.get("data", resp2)
-        if data2.get("checked_in", False):
-            credits = data2.get("credits", "未知")
-            log(f"[TraeWork] 今日已签到，当前积分: {credits}")
-            return True, f"今日已签到，当前积分: {credits}", True
 
     log(f"[TraeWork] 签到失败，返回: {json.dumps(resp, ensure_ascii=False)[:200]}")
     return False, f"签到失败: {resp.get('message', '未知错误')}", False
