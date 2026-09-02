@@ -18,6 +18,7 @@ import os
 import sys
 import json
 import time
+import random
 import hashlib
 import datetime
 import urllib.request
@@ -57,6 +58,10 @@ def post_json(url, headers, data=None, timeout=30):
             return e.code, {"raw": raw, "error": str(e)}
     except Exception as e:
         return 0, {"error": str(e)}
+
+
+# TraeWork 客户端 User-Agent（模拟 Electron/Chromium 网络栈）
+CHROME_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
 
 
 def push_notification(title, content, sc_key="", webhook_url=""):
@@ -121,17 +126,27 @@ def trae_checkin(token):
     log("开始 TraeWork 签到")
 
     # 使用持久化设备 ID：优先从环境变量读取，否则基于 token 生成确定性 ID
-    # 源码中 guaranteedDeviceId 是持久化的，每次随机生成会被服务端检测为异常
     device_id = os.environ.get("TRAE_DEVICE_ID", "").strip()
     if not device_id:
         device_id = hashlib.sha256(token.encode()).hexdigest()[:32]
 
+    # 模拟 TraeWork 客户端 (Electron/Chromium) 的请求头
+    # 源码分析：bb() 方法构造 auth headers，fb() 方法追加 device headers
+    # TTNet c() 方法追加 x-rust-request-timeout
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Cloud-IDE-JWT {token}",
+        "X-User-Region": "CN",
         "x-device-id": device_id,
         "x-device-type": "windows",
+        "x-device-brand": "Windows",
+        "x-rust-request-timeout": "30000",
     }
+
+    # 模拟用户行为：首次请求前随机等待 2-5 秒
+    initial_delay = random.uniform(2, 5)
+    log(f"等待 {initial_delay:.1f} 秒后开始签到...")
+    time.sleep(initial_delay)
 
     # 直接签到，不预先查询状态（避免被检测为自动化行为）
     # 限流时快速重试，不长时间等待（靠 10 点兜底任务补签）
