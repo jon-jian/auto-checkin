@@ -23,8 +23,6 @@ jobs:
 
       - name: 运行签到脚本
         env:
-          TRAE_TOKEN: ${{ secrets.TRAE_TOKEN }}
-          TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
           CODEBUDDY_TOKEN: ${{ secrets.CODEBUDDY_TOKEN }}
           SC_KEY: ${{ secrets.SC_KEY }}
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
