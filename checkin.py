@@ -194,10 +194,12 @@ def main():
         result = f"CodeBuddy: {'✅' if success else '❌'} {msg}"
         if not already:
             need_push = True
+            title = f"{'✅' if success else '❌'} CodeBuddy 签到{'成功' if success else '失败'}"
     except Exception as e:
         log(f"[CodeBuddy] 异常: {e}")
         result = f"CodeBuddy: ❌ 异常: {e}"
         need_push = True
+        title = "❌ CodeBuddy 签到异常"
 
     log("=" * 60)
     log("签到结果汇总:")
@@ -206,7 +208,7 @@ def main():
 
     if need_push and (sc_key or webhook_url):
         log("检测到需要通知的事件，正在推送...")
-        push_notification("自动签到结果", result, sc_key, webhook_url)
+        push_notification(title, result, sc_key, webhook_url)
     else:
         log("今日已签到，无需推送通知")
 
