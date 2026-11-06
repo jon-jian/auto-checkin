@@ -16,6 +16,7 @@ import os
 import sys
 import json
 import time
+import base64
 import datetime
 import urllib.request
 import urllib.error
@@ -91,6 +92,42 @@ def push_notification(title, content, sc_key="", webhook_url=""):
 
 
 # ============================================================
+# Token 有效期预检
+# ============================================================
+
+def decode_jwt_payload(token):
+    """解析 JWT payload（仅 base64 解码，不验签），失败返回空 dict"""
+    try:
+        parts = token.split(".")
+        if len(parts) < 3:
+            return {}
+        seg = parts[1]
+        seg += "=" * (-len(seg) % 4)
+        return json.loads(base64.urlsafe_b64decode(seg.encode("ascii")))
+    except Exception:
+        return {}
+
+
+def token_remaining_days(token):
+    """
+    返回 (剩余天数, 是否已过期)。
+    无法解析 exp 时返回 (None, False)，由调用方决定跳过检查。
+    """
+    exp = decode_jwt_payload(token).get("exp")
+    if not exp:
+        return None, False
+    try:
+        remain = (float(exp) - time.time()) / 86400.0
+    except (TypeError, ValueError):
+        return None, False
+    return remain, remain <= 0
+
+
+def fmt_ts(ts):
+    return datetime.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ============================================================
 # CodeBuddy (WorkBuddy) 签到
 # ============================================================
 
@@ -111,14 +148,29 @@ def _is_token_expired(status_code, resp):
     return False
 
 
-def codebuddy_checkin(token):
+def build_headers(token="", cookie=""):
+    """构造请求头：Token 模式用 Bearer，Cookie 模式用 Cookie"""
+    headers = {
+        "Accept": "application/json, text/plain, */*",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
+        ),
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
+def codebuddy_checkin(token="", cookie=""):
     """CodeBuddy / WorkBuddy 每日签到，返回 (success, msg, already_checked_in)"""
     log("=" * 50)
     log("开始 CodeBuddy 签到")
+    log(f"认证方式: {'Token' if token else 'Cookie'}")
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-    }
+    headers = build_headers(token, cookie)
 
     # 1. 查询签到状态
     log("查询签到状态...")
@@ -180,17 +232,55 @@ def main():
     log("=" * 60)
 
     cb_token = os.environ.get("CODEBUDDY_TOKEN", "").strip()
+    cb_cookie = os.environ.get("CODEBUDDY_COOKIE", "").strip()
     sc_key = os.environ.get("SC_KEY", "").strip()
     webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
 
-    if not cb_token:
-        log("[错误] 未配置 CODEBUDDY_TOKEN，请设置环境变量")
+    if not cb_token and not cb_cookie:
+        log("[错误] 未配置 CODEBUDDY_TOKEN 或 CODEBUDDY_COOKIE，请设置环境变量")
         sys.exit(1)
 
+    # ---------- Token 有效期预检（仅 Token 模式） ----------
+    try:
+        warn_days = float(os.environ.get("TOKEN_WARN_DAYS", "3"))
+    except ValueError:
+        warn_days = 3.0
+
+    expiry_warning = ""
+    remain, expired = (None, False)
+    payload = {}
+
+    if cb_token:
+        remain, expired = token_remaining_days(cb_token)
+        payload = decode_jwt_payload(cb_token)
+
+    if not cb_token:
+        log("[Token] 使用 Cookie 认证，跳过有效期检查")
+    elif remain is None:
+        log("[Token] 无法解析 exp，跳过有效期检查")
+    else:
+        exp_ts = payload.get("exp")
+        log(f"[Token] 到期时间: {fmt_ts(exp_ts)}（剩余 {remain:.1f} 天）")
+        if expired:
+            log("[Token] ❌ Token 已过期，不再发起请求")
+            msg = f"Token 已于 {fmt_ts(exp_ts)} 过期，请更新 CODEBUDDY_TOKEN 后重跑"
+            log("=" * 60)
+            log(msg)
+            log("=" * 60)
+            if sc_key or webhook_url:
+                push_notification("❌ CodeBuddy Token 已过期", msg, sc_key, webhook_url)
+            sys.exit(1)
+        if remain < warn_days:
+            expiry_warning = f"\n注意: Token 仅剩 {remain:.1f} 天（{fmt_ts(exp_ts)} 到期），请尽快更换"
+            log(f"[Token] ⚠️ {expiry_warning.strip()}")
+
+    success = False
+    already = False
     need_push = False
+    title = ""
 
     try:
-        success, msg, already = codebuddy_checkin(cb_token)
+        success, msg, already = codebuddy_checkin(cb_token, cb_cookie)
         result = f"CodeBuddy: {'✅' if success else '❌'} {msg}"
         if not already:
             need_push = True
@@ -201,6 +291,13 @@ def main():
         need_push = True
         title = "❌ CodeBuddy 签到异常"
 
+    # 有效期临近时，即使今日已签到也要提醒（签到本身失败时不叠加，避免结论矛盾）
+    if expiry_warning and success:
+        result += expiry_warning
+        if not need_push:
+            need_push = True
+            title = "⚠️ CodeBuddy Token 即将过期"
+
     log("=" * 60)
     log("签到结果汇总:")
     log(result)
@@ -209,8 +306,11 @@ def main():
     if need_push and (sc_key or webhook_url):
         log("检测到需要通知的事件，正在推送...")
         push_notification(title, result, sc_key, webhook_url)
-    else:
+    elif not need_push:
         log("今日已签到，无需推送通知")
+
+    # 失败时以非零码退出，让 Actions 变红并触发 GitHub 失败邮件
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

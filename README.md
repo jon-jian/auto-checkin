@@ -26,23 +26,33 @@
 .
 ├── .github/workflows/checkin.yml   # GitHub Actions 定时任务
 ├── checkin.py                       # 签到主脚本
-├── extract_tokens.py                # 本地 token 提取工具
 └── README.md
 ```
 
-### 2. 本地提取 Token
+### 2. 获取凭证（二选一）
 
-在你的电脑上（已安装并登录 CodeBuddy 客户端）运行：
+> **重要**：新版客户端把 Token 用 AES-128-GCM 加密后存在本地（`$wbEncrypted` 格式），
+> 密钥在客户端内部，无法直接从文件读出明文。请从网页端获取凭证。
 
-```bash
-python extract_tokens.py
-```
+**方式 A：Token（推荐）**
 
-脚本会自动从本地客户端文件中提取 Token：
+1. 打开 [www.codebuddy.cn](https://www.codebuddy.cn) 并登录
+2. 按 `F12` 打开开发者工具 → 切到 **Network**（网络）标签
+3. 在页面上点一下任意功能，触发 API 请求
+4. 点开任意一条请求，在 **Request Headers** 里找到：
 
-| 提取项 | 本地文件路径 | 说明 |
-|--------|-------------|------|
-| CodeBuddy Token | `%LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info` | 明文 JSON |
+   ```
+   Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+   ```
+
+5. 复制 `Bearer ` 后面整串（以 `ey` 开头的 JWT），作为 `CODEBUDDY_TOKEN`
+
+**方式 B：Cookie（备用）**
+
+同样的 Network 面板里，找到 **Request Headers** 的 `cookie` 行，
+把 `session=...; session_2=...` 整段复制下来，作为 `CODEBUDDY_COOKIE`。
+
+脚本两种方式都支持：配置了 `CODEBUDDY_TOKEN` 就用 Token，只用 `CODEBUDDY_COOKIE` 就走 Cookie。
 
 ### 3. 配置 GitHub Secrets
 
@@ -50,7 +60,8 @@ python extract_tokens.py
 
 | Secret 名称 | 值 | 必填 |
 |-------------|---|------|
-| `CODEBUDDY_TOKEN` | CodeBuddy 提取的 accessToken | 必填 |
+| `CODEBUDDY_TOKEN` | 网页端复制的 JWT Token | 二选一 |
+| `CODEBUDDY_COOKIE` | 网页端复制的 Cookie 串 | 二选一 |
 | `SC_KEY` | Server 酱 sendkey | 可选，用于微信推送通知 |
 | `WEBHOOK_URL` | 通用 Webhook 地址 | 可选，POST JSON 通知 |
 
@@ -91,17 +102,28 @@ GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天�
 ## 本地运行
 
 ```bash
-# 设置环境变量
-export CODEBUDDY_TOKEN="你的CodeBuddy Token"
+# Token 模式
+set CODEBUDDY_TOKEN=你的Token
+python checkin.py
 
-# 运行
+# Cookie 模式
+set CODEBUDDY_COOKIE=session=xxx; session_2=xxx
 python checkin.py
 ```
 
 ## 常见问题
 
 **Q: Token 过期了怎么办？**
-A: 重新打开 CodeBuddy 客户端并登录，然后重新运行 `extract_tokens.py` 提取新 Token，更新 GitHub Secrets。
+A: 新版客户端本地存储的 Token 已加密（`$wbEncrypted`），无法从文件直接提取。
+   请按「2. 获取凭证」从网页端复制新的 Token 或 Cookie，更新 GitHub Secrets 后重跑。
+
+**Q: 能不能降级客户端版本来绕过加密？**
+A: 不建议。降级后客户端通常会强制更新，且服务端认证逻辑不随之改变，
+   旧版仍可能使用加密存储。从网页端获取凭证更可靠。
+
+**Q: 为什么不用本地脚本自动提取 Token？**
+A: 客户端用 AES-128-GCM 加密 Token，密钥（keyId `9127dea1b44020a7`）保存在客户端内部，
+   不在任何明文文件中，纯本地脚本无法解密。
 
 **Q: 怎么收到签到结果通知？**
 A: 配置 `SC_KEY`（Server 酱）或 `WEBHOOK_URL`（飞书/钉钉/企微等 Webhook），签到结果会自动推送到微信。
