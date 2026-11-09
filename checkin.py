@@ -148,29 +148,24 @@ def _is_token_expired(status_code, resp):
     return False
 
 
-def build_headers(token="", cookie=""):
-    """构造请求头：Token 模式用 Bearer，Cookie 模式用 Cookie"""
-    headers = {
+def build_headers(token):
+    """构造请求头"""
+    return {
         "Accept": "application/json, text/plain, */*",
+        "Authorization": f"Bearer {token}",
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36"
         ),
     }
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    if cookie:
-        headers["Cookie"] = cookie
-    return headers
 
 
-def codebuddy_checkin(token="", cookie=""):
+def codebuddy_checkin(token):
     """CodeBuddy / WorkBuddy 每日签到，返回 (success, msg, already_checked_in)"""
     log("=" * 50)
     log("开始 CodeBuddy 签到")
-    log(f"认证方式: {'Token' if token else 'Cookie'}")
 
-    headers = build_headers(token, cookie)
+    headers = build_headers(token)
 
     # 1. 查询签到状态
     log("查询签到状态...")
@@ -232,12 +227,11 @@ def main():
     log("=" * 60)
 
     cb_token = os.environ.get("CODEBUDDY_TOKEN", "").strip()
-    cb_cookie = os.environ.get("CODEBUDDY_COOKIE", "").strip()
     sc_key = os.environ.get("SC_KEY", "").strip()
     webhook_url = os.environ.get("WEBHOOK_URL", "").strip()
 
-    if not cb_token and not cb_cookie:
-        log("[错误] 未配置 CODEBUDDY_TOKEN 或 CODEBUDDY_COOKIE，请设置环境变量")
+    if not cb_token:
+        log("[错误] 未配置 CODEBUDDY_TOKEN，请设置环境变量")
         sys.exit(1)
 
     # ---------- Token 有效期预检（仅 Token 模式） ----------
@@ -247,16 +241,10 @@ def main():
         warn_days = 3.0
 
     expiry_warning = ""
-    remain, expired = (None, False)
-    payload = {}
+    remain, expired = token_remaining_days(cb_token)
+    payload = decode_jwt_payload(cb_token)
 
-    if cb_token:
-        remain, expired = token_remaining_days(cb_token)
-        payload = decode_jwt_payload(cb_token)
-
-    if not cb_token:
-        log("[Token] 使用 Cookie 认证，跳过有效期检查")
-    elif remain is None:
+    if remain is None:
         log("[Token] 无法解析 exp，跳过有效期检查")
     else:
         exp_ts = payload.get("exp")
@@ -280,7 +268,7 @@ def main():
     title = ""
 
     try:
-        success, msg, already = codebuddy_checkin(cb_token, cb_cookie)
+        success, msg, already = codebuddy_checkin(cb_token)
         result = f"CodeBuddy: {'✅' if success else '❌'} {msg}"
         if not already:
             need_push = True

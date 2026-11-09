@@ -29,30 +29,23 @@
 └── README.md
 ```
 
-### 2. 获取凭证（二选一）
+### 2. 获取 Token
 
-> **重要**：新版客户端把 Token 用 AES-128-GCM 加密后存在本地（`$wbEncrypted` 格式），
-> 密钥在客户端内部，无法直接从文件读出明文。请从网页端获取凭证。
+> **重要**：新版客户端把本地存储的 Token 用 AES-128-GCM 加密（`$wbEncrypted` 格式），
+> 密钥在客户端内部，无法直接从本地文件读出明文。需要通过抓包获取传输中的明文 JWT。
 
-**方式 A：Token（推荐）**
+**操作步骤：**
 
-1. 打开 [www.codebuddy.cn](https://www.codebuddy.cn) 并登录
-2. 按 `F12` 打开开发者工具 → 切到 **Network**（网络）标签
-3. 在页面上点一下任意功能，触发 API 请求
-4. 点开任意一条请求，在 **Request Headers** 里找到：
+1. 打开 [Fiddler Classic](https://www.telerik.com/fiddler) 或 [mitmproxy](https://mitmproxy.org/)，开启 HTTPS 解密
+2. 打开 WorkBuddy 桌面客户端，随便操作一下（加载页面、点按钮等）
+3. 在抓包工具里找到发往 `www.codebuddy.cn` 或 `www.workbuddy.cn` 的请求
+4. 点开请求，在 **Request Headers** 里找到：
 
    ```
    Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
    ```
 
-5. 复制 `Bearer ` 后面整串（以 `ey` 开头的 JWT），作为 `CODEBUDDY_TOKEN`
-
-**方式 B：Cookie（备用）**
-
-同样的 Network 面板里，找到 **Request Headers** 的 `cookie` 行，
-把 `session=...; session_2=...` 整段复制下来，作为 `CODEBUDDY_COOKIE`。
-
-脚本两种方式都支持：配置了 `CODEBUDDY_TOKEN` 就用 Token，只用 `CODEBUDDY_COOKIE` 就走 Cookie。
+5. 复制 `Bearer ` 后面整串（以 `ey` 开头的 JWT）
 
 ### 3. 配置 GitHub Secrets
 
@@ -60,8 +53,7 @@
 
 | Secret 名称 | 值 | 必填 |
 |-------------|---|------|
-| `CODEBUDDY_TOKEN` | 网页端复制的 JWT Token | 二选一 |
-| `CODEBUDDY_COOKIE` | 网页端复制的 Cookie 串 | 二选一 |
+| `CODEBUDDY_TOKEN` | 抓包得到的 JWT Token | ✅ |
 | `SC_KEY` | Server 酱 sendkey | 可选，用于微信推送通知 |
 | `WEBHOOK_URL` | 通用 Webhook 地址 | 可选，POST JSON 通知 |
 
@@ -93,7 +85,7 @@ GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天�
 
 ## 注意事项
 
-1. **Token 有效期约 60 天**，过期后需重新登录客户端并提取新 Token
+1. **Token 有效期约 30 天**，过期后需用抓包工具从客户端获取新 Token
 2. **签到积分有保质期**（通常 30 天），记得及时使用
 3. 脚本是幂等的——今日已签则会跳过，不会重复签到
 4. Token 存储在 GitHub Secrets 中，不会泄露
@@ -102,20 +94,14 @@ GitHub Actions 的 cron 可能有 5-15 分钟延迟，属正常现象。每天�
 ## 本地运行
 
 ```bash
-# Token 模式
 set CODEBUDDY_TOKEN=你的Token
-python checkin.py
-
-# Cookie 模式
-set CODEBUDDY_COOKIE=session=xxx; session_2=xxx
 python checkin.py
 ```
 
 ## 常见问题
 
 **Q: Token 过期了怎么办？**
-A: 新版客户端本地存储的 Token 已加密（`$wbEncrypted`），无法从文件直接提取。
-   请按「2. 获取凭证」从网页端复制新的 Token 或 Cookie，更新 GitHub Secrets 后重跑。
+A: Token 有效期约 30 天。过期后重新用抓包工具（Fiddler/mitmproxy）从 WorkBuddy 客户端获取新 Token，更新 GitHub Secrets 后重跑。
 
 **Q: 能不能降级客户端版本来绕过加密？**
 A: 不建议。降级后客户端通常会强制更新，且服务端认证逻辑不随之改变，
